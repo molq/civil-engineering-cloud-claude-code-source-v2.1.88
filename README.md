@@ -573,14 +573,6 @@ export CLAUDE_CODE_MAX_OUTPUT_TOKENS=16384
 
 ---
 
-## 声明
-
-- 本仓库为 **Claude Code Source** 整合存档，源码版权归 [Anthropic](https://www.anthropic.com) 所有
-- 仅用于技术研究与学习，请勿用于商业用途
-- 如有侵权，请联系删除
-- 本仓库不隶属于、未经 Anthropic 认可或维护
----
-
 ## GitHub 相关仓库清单
 
 泄露事件发生后，全网开发者迅速行动，创建了多个镜像和分析仓库。以下是主要仓库汇总：
@@ -1172,3 +1164,12 @@ async function* query() {
   "deny": ["~/.ssh/**", "**/.env"]
 }
 ```
+
+---
+
+## 声明
+
+- 本仓库为 **Claude Code Source** 整合存档，源码版权归 [Anthropic](https://www.anthropic.com) 所有
+- 仅用于技术研究与学习，请勿用于商业用途
+- 如有侵权，请联系删除
+- 本仓库不隶属于、未经 Anthropic 认可或维护
