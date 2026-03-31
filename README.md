@@ -21,6 +21,11 @@
 - [安全影响与建议](#安全影响与建议)
 - [关键数据](#关键数据)
 - [参考资料](#参考资料)
+- [GitHub 相关仓库](#github-相关仓库清单)
+- [技术深度分析摘要](#技术深度分析摘要)
+- [内存泄露问题汇总](#内存泄露问题汇总)
+- [架构亮点与争议](#架构亮点与争议)
+- [社区评价](#社区评价)
 - [声明](#声明)
 ## 项目总览
 
@@ -534,3 +539,136 @@ export CLAUDE_CODE_MAX_OUTPUT_TOKENS=16384
 - 仅用于技术研究与学习，请勿用于商业用途
 - 如有侵权，请联系删除
 - 本仓库不隶属于、未经 Anthropic 认可或维护
+---
+
+## GitHub 相关仓库清单
+
+泄露事件发生后，全网开发者迅速行动，创建了多个镜像和分析仓库。以下是主要仓库汇总：
+
+### 源码镜像仓库
+
+| 仓库 | 说明 | Stars |
+|------|------|-------|
+| [instructkr/claude-code](https://github.com/instructkr/claude-code) | 最早的完整镜像 | 20K+ |
+| [Rito-w/claude-code](https://github.com/Rito-w/claude-code) | 研究版，含架构分析 | - |
+| [Rito-w/ClaudeCode](https://github.com/Rito-w/ClaudeCode) | 可运行版 | - |
+| [Janlaywss/cloud-code](https://github.com/Janlaywss/cloud-code) | 原始破解版 | 99 |
+| [sanbuphy/claude-code-source-code](https://github.com/sanbuphy/claude-code-source-code) | 早期镜像 | - |
+
+### 分析与工具仓库
+
+| 仓库 | 说明 |
+|------|------|
+| [yanchuk/claude-code-architecture](https://gist.github.com/yanchuk/0c47dd351c2805236e44ec3935e9095d) | Claude Code Agent 完整架构深度分析 |
+| [dalsoop/claude-code-memory-leak-fix](https://github.com/dalsoop/claude-code-memory-leak-fix) | 内存泄露修复工具 |
+| [MadAppGang/claude-code](https://github.com/MadAppGang/claude-code) | Claude Plugins 生态系统 |
+
+### 隐藏内容展示
+
+| 网站 | 说明 |
+|------|------|
+| [ccleaks.com](https://ccleaks.com) | 社区搭建的隐藏功能展示站 |
+
+---
+
+## 技术深度分析摘要
+
+### 对话引擎架构 (Query Loop)
+
+Claude Code 的对话引擎建立在一个 `while(true)` 循环上，每次迭代完成一轮模型交互：
+
+```
+预处理 → API调用(流式) → 工具执行 → 结果拼回 → 下一轮
+```
+
+**关键设计**:
+- 使用 `async function*` (async generator) 实现背压控制
+- 流式工具执行：模型输出 tool_use block 后立即开始执行，不等待
+- Token 边际递减检测：连续 3 轮增量不足 500 token 则提前停止
+
+### 三层上下文压缩架构
+
+| 层级 | 触发条件 | API 调用 |
+|------|----------|----------|
+| **Micro Compact** | 每轮 API 请求前 | 无 |
+| **Session Memory Compact** | 后台持续运行 | 无 |
+| **LLM Compact** | 上下文超限 | 是 |
+
+### 六级权限验证系统
+
+每次工具调用（Shell 命令、文件读写）都必须经过：
+1. 基础权限检查
+2. 风险分级 (LOW/MEDIUM/HIGH)
+3. ML 分类器自动审批
+4. YOLO 模式快速判断
+5. 用户交互确认
+6. 执行结果验证
+
+### 代码质量争议
+
+社区在分析中也发现了一些"代码屎山"：
+
+- `src/cli/print.ts`: 单一函数 3000+ 行，12 层嵌套
+- 情绪检测使用正则表达式而非 AI 模型：
+  ```typescript
+  // 检测用户是否在骂人
+  /ffs|shitty/i.test(input)
+  ```
+
+---
+
+## 内存泄露问题汇总
+
+泄露的源码也帮助社区定位了多个内存泄露问题：
+
+### 主要 Issue
+
+| Issue | 版本 | 问题 | 影响 |
+|--------|------|------|------|
+| [#21220](https://github.com/anthropics/claude-code/issues/21220) | 2.1.8+ | 索引时内存暴涨 8-12GB | 大项目崩溃 |
+| [#26528](https://github.com/anthropics/claude-code/issues/26528) | 2.1.44 | 代码生成时内存到 8.5GB+ | 无法使用 |
+| [#36956](https://github.com/anthropics/claude-code/issues/36956) | 2.1.81 | glibc heap 泄露 189GB | 长时间运行 |
+| [#24644](https://github.com/anthropics/claude-code/issues/24644) | 2.1.38 | 会话恢复后 44GB+ | 无法终止进程 |
+| [#4953](https://github.com/anthropics/claude-code/issues/4953) | 1.0.53 | 120GB+ RAM OOM | 扩展会话崩溃 |
+
+### 社区修复方案
+
+**LD_PRELOAD guard** ([dalsoop/claude-code-memory-leak-fix](https://github.com/dalsoop/claude-code-memory-leak-fix)):
+
+```bash
+git clone https://github.com/dalsoop/claude-code-memory-leak-fix.git
+cd claude-code-memory-leak-fix
+make && sudo make install
+claude-safe  # 替代 claude 命令
+```
+
+---
+
+## 架构亮点与争议
+
+### 亮点
+
+1. **生产级 Agent Harness 设计**: REPL 启动、QueryEngine、工具注册、斜杠命令、权限系统、任务系统、多层状态管理
+2. **流式并行执行**: 工具执行与模型输出并行，不浪费等待时间
+3. **多层安全防护**: 路径遍历、Unicode 标准化、反斜杠注入等攻击向量的完整防护
+4. **记忆系统设计**: 三层压缩架构，平衡上下文长度与信息保留
+
+### 争议
+
+1. **Undercover Mode**: 强制在公开仓库抹除 AI 痕迹，开发者感到"不舒服"
+2. **情绪监控**: 用正则表达式追踪用户是否"骂人"
+3. **print.ts 屎山**: 3000+ 行单函数，12 层嵌套
+4. **隐私顾虑**: Datadog 遥测追踪用户行为
+
+---
+
+## 社区评价
+
+> "整个 repo 分得很细，主流程包括 REPL 启动、QueryEngine、工具注册、Slash 命令、权限系统、任务系统，以及多层状态管理，非常典型的生产级 AI agent harness 设计。"
+> -- @sanbuphy
+
+> "他们建了一整套系统来阻止 AI 泄密——然后自己把全部源码打包发了上去。"
+> -- 社区评论
+
+> "这应该是 Claude Code 官方不小心把 v2.1.88 的源码直接传到了 npm 包里，整体代码结构很成熟。"
+> -- 量子位分析
