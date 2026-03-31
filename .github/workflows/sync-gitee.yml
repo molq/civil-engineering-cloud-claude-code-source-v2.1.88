@@ -5,19 +5,28 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  GITEE_OWNER: civil-engineering-cloud
+  GITEE_REPO: ${{ github.event.repository.name }}
+  GITHUB_REPO: ${{ github.repository }}
+
 jobs:
-  sync:
+  sync-code:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ github.token }}
 
-      - name: Push to Gitee
-        run: |
-          git remote add gitee ${{ secrets.GITEE_REPO_URL }}
-          git push gitee main:master --force
+      - name: Sync to Gitee
         env:
-          GITEE_REPO_URL: ${{ secrets.GITEE_REPO_URL }}
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          echo "$GITEE_SSH_PRIVATE_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -t ecdsa,ed25519,rsa gitee.com >> ~/.ssh/known_hosts 2>/dev/null
+          git remote add gitee git@gitee.com:${GITEE_OWNER}/${GITEE_REPO}.git || true
+          git push --mirror gitee
