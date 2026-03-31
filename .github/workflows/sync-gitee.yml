@@ -1,0 +1,23 @@
+name: Sync to Gitee
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ github.token }}
+
+      - name: Push to Gitee
+        run: |
+          git remote add gitee ${{ secrets.GITEE_REPO_URL }}
+          git push gitee main:master --force
+        env:
+          GITEE_REPO_URL: ${{ secrets.GITEE_REPO_URL }}
