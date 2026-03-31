@@ -17,6 +17,24 @@
 
 ### 深度分析
 - [核心架构速览](#源码核心架构速览)
+- [模块详细分析](#源码模块详细分析)
+  - [main.tsx CLI 入口](#1-maintsx----cli-入口与启动流程)
+  - [tools 工具系统](#2-tools----工具系统矩阵)
+  - [commands 命令系统](#3-commands----斜杠命令系统)
+  - [services 服务层](#4-services----核心服务层)
+  - [context 状态管理](#5-context----react-context-状态管理)
+  - [coordinator 多智能体](#6-coordinator----多-agent-协调器)
+  - [assistant KAIROS](#7-assistant-kairos----7x24-小时守护模式)
+  - [buddy AI 伴侣](#8-buddy----ai-伴侣系统)
+  - [remote 远程控制](#9-remote----远程控制与桥接)
+  - [plugins 插件系统](#10-plugins----插件系统)
+  - [skills 技能系统](#11-skills----技能系统)
+  - [voice 语音交互](#12-voice----语音交互)
+  - [vim Vim 模式](#13-vim----vim-模式引擎)
+  - [utils 工具库](#14-utils----工具函数库)
+  - [Query Loop 对话引擎](#15-query-loop----对话引擎核心)
+  - [上下文压缩架构](#16-上下文压缩架构)
+  - [安全权限系统](#17-安全与权限系统)
 - [隐藏功能大曝光](#隐藏功能大曝光)
 - [技术深度分析摘要](#技术深度分析摘要)
   - [对话引擎架构](#对话引擎架构-query-loop)
@@ -684,3 +702,463 @@ claude-safe  # 替代 claude 命令
 
 > "这应该是 Claude Code 官方不小心把 v2.1.88 的源码直接传到了 npm 包里，整体代码结构很成熟。"
 > -- 量子位分析
+---
+
+## 源码模块详细分析
+
+基于 51.2 万行源码的深度逆向分析，详解 Claude Code 的核心架构设计。
+
+---
+
+### 1. main.tsx -- CLI 入口与启动流程
+
+**文件规模**: 核心入口文件
+
+**启动流程**:
+
+```
+CLI 启动 → 环境检测 → 认证检查 → MCP 配置加载 → REPL 初始化 → Query Loop
+```
+
+**核心功能**:
+
+| 功能 | 说明 |
+|------|------|
+| 环境检测 | 支持 GitHub Actions、SDK 集成、VS Code 扩展、远程会话、标准 CLI |
+| 客户端识别 | 7 种不同场景的客户端类型识别 |
+| 认证体系 | API Key > OAuth > 交互式登录 |
+| 权限模式 | default / bypassPermissions / enterprise |
+
+**关键设计**:
+
+- **Commander.js CLI 框架**: 处理命令行参数和子命令
+- **React + Ink 渲染**: 终端 UI 组件化
+- **状态机管理**: 多层状态转换控制
+
+---
+
+### 2. tools/ -- 工具系统矩阵
+
+**工具数量**: 53 个内置工具
+
+**核心工具分类**:
+
+| 类别 | 工具 | 说明 |
+|------|------|------|
+| **文件操作** | ReadTool, WriteTool, EditTool, GlobTool | 文件读写修改 |
+| **代码搜索** | GrepTool, SearchTool | 内容搜索 |
+| **Shell 执行** | BashTool | 命令执行（沙箱/非沙箱） |
+| **Git 操作** | GitTool, CommitTool | 版本控制 |
+| **Agent 协作** | AgentTool, MCPTool | 子代理、MCP 服务器 |
+| **网络** | WebFetchTool, WebSearchTool | 网页访问 |
+
+**Bash 工具安全设计**:
+
+```typescript
+// 智能沙箱模式切换
+- 检测运行环境安全性
+- 自动选择沙箱/非沙箱版本
+- 权限白名单验证
+- 命令审计日志
+```
+
+**工具调用流程**:
+
+```
+API 返回 tool_use block → 分配唯一 ID → 并行/串行执行 → 结果封装 → 拼回消息数组
+```
+
+**流式优化**: `StreamingToolExecutor` 在模型流式输出过程中就开始执行工具，不等待完整响应。
+
+---
+
+### 3. commands/ -- 斜杠命令系统
+
+**命令数量**: 87 个斜杠命令
+
+**核心命令分类**:
+
+| 类别 | 命令示例 | 功能 |
+|------|----------|------|
+| **代码管理** | /commit, /review, /test | Git 提交、代码审查、测试 |
+| **上下文** | /compact, /clear | 上下文压缩、清除 |
+| **会话** | /session, /model | 会话管理、模型切换 |
+| **MCP** | /mcp, /mcp-add | MCP 服务器管理 |
+| **配置** | /config, /permissions | 配置管理、权限设置 |
+| **远程** | /remote, /rc | 远程控制功能 |
+
+**命令架构**:
+
+```typescript
+// 命令注册表设计
+commands/
+  ├── commit.ts      // 提交命令
+  ├── review.ts      // 审查命令
+  ├── compact.ts     // 压缩命令
+  └── ...
+```
+
+**权限配置语法**:
+
+```json
+"Bash(npm run:*)"    // 前缀匹配
+"Bash(npm *)"        // 通配符匹配
+"Bash"               // 允许所有
+```
+
+---
+
+### 4. services/ -- 核心服务层
+
+**API 服务** (`services/api/claude.ts`): **3,419 行**
+
+| 功能 | 说明 |
+|------|------|
+| API 调用 | 7 个关键 API 调用点 |
+| SSE 解析 | 流式事件处理 |
+| 多云支持 | Anthropic / AWS Bedrock / Google Vertex |
+
+**认证服务**:
+
+```typescript
+// 认证优先级
+1. 环境变量 ANTHROPIC_API_KEY
+2. OAuth 令牌
+3. 交互式登录流程
+```
+
+**MCP 服务**:
+
+```typescript
+// 配置加载优先级
+1. --mcp-config 命令行参数
+2. 企业配置 (Enterprise MCP)
+3. 项目配置 (.mcp.json)
+4. 用户配置 (~/.claude/mcp.json)
+```
+
+**分析服务**: 用户行为分析、遥测数据收集
+
+---
+
+### 5. context/ -- React Context 状态管理
+
+**核心 Context**:
+
+| Context | 用途 |
+|---------|------|
+| AppContext | 应用全局状态 |
+| SessionContext | 会话状态管理 |
+| ToolContext | 工具调用状态 |
+| PermissionContext | 权限审批状态 |
+
+**状态管理设计**:
+
+```typescript
+// 多层状态机
+state = {
+  messages: Message[],      // 对话历史
+  transition: { reason },   // 状态转换原因
+  tools: ToolResult[],      // 工具结果
+  permissions: Permission[] // 权限请求
+}
+```
+
+---
+
+### 6. coordinator/ -- 多 Agent 协调器
+
+**四阶段工作流**:
+
+```
+研究阶段 → 综合阶段 → 规划阶段 → 执行阶段
+```
+
+**协调机制**:
+
+1. **研究阶段**: 多个 Worker 并行调查代码库
+2. **综合阶段**: Coordinator 阅读所有 Worker 发现
+3. **规划阶段**: 制定行动计划
+4. **执行阶段**: 指挥执行并整合结果
+
+**使用方式**:
+
+```bash
+export CLAUDE_CODE_COORDINATOR_MODE=1
+claude
+```
+
+---
+
+### 7. assistant/ (KAIROS) -- 7×24 小时守护模式
+
+**核心能力**:
+
+| 功能 | 说明 |
+|------|------|
+| 永不掉线 | 后台持续运行，维护项目状态 |
+| 记忆整合 | 每日追加日志，记录观察和决策 |
+| 主动监控 | 对观察到的事项采取行动 |
+| GitHub 集成 | 自动响应代码推送、PR 事件 |
+
+**技术细节**:
+
+```typescript
+// 强制打开简报模式
+// 允许工具主动向用户发消息
+// 支持 cron、scheduled tasks
+// 与 MCP channel notifications 连接
+```
+
+---
+
+### 8. buddy/ -- AI 伴侣系统
+
+**电子宠物完成度**: 极高（原计划愚人节发布）
+
+**功能特性**:
+
+| 特性 | 说明 |
+|------|------|
+| 宠物种类 | 18 种（鸭子、龙、美西螈、水豚等） |
+| 稀有度 | 普通 → 稀有 → 史诗 → 传说（1% 掉率） |
+| 闪光变体 | Shiny Variants 支持 |
+| 五维属性 | 调试能力、耐心、混沌值、智慧、毒舌 |
+| 装饰 | 可以戴帽子 |
+| 显示 | 对话气泡形式，停留在输入框旁边 |
+
+---
+
+### 9. remote/ -- 远程控制与桥接
+
+**Remote Control 功能** (2026年2月25日上线):
+
+```
+┌─────────────────┐         ┌─────────────────┐
+│   本地电脑       │◄───────►│   手机/平板      │
+│                 │  加密连接 │                 │
+│ • 代码执行       │         │ • 显示界面       │
+│ • 文件操作       │         │ • 发送指令       │
+│ • AI 计算        │         │ • 语音输入       │
+└─────────────────┘         └─────────────────┘
+```
+
+**Bridge MCP 架构** ([claude-bridge-mcp](https://github.com/0motionguy/claude-bridge-mcp)):
+
+```typescript
+// 远程 MCP 工具
+- claude_execute   // 执行任务
+- claude_query     // 询问问题（只读）
+- claude_read_file // 读取文件
+- claude_git_status // Git 状态
+```
+
+**安全特性**:
+
+- IP 白名单
+- Bearer Token 认证
+- 目录白名单
+- Symlink 保护
+- 执行队列限流
+
+---
+
+### 10. plugins/ -- 插件系统
+
+**插件架构**:
+
+```typescript
+// 插件目录结构
+plugins/
+  ├── lt-dev/           // 示例插件
+  │   ├── commands/     // 插件命令
+  │   └── skills/       // 插件技能
+  └── ...
+```
+
+**插件能力**:
+
+- 自定义斜杠命令
+- 自定义工具
+- 自定义技能
+- 生命周期钩子
+
+---
+
+### 11. skills/ -- 技能系统
+
+**技能定义**:
+
+```yaml
+# skill.yaml 示例
+name: custom-skill
+description: 自定义技能描述
+commands:
+  - /custom-cmd
+tools:
+  - custom-tool
+```
+
+**内置技能**:
+
+- 语言模型优化
+- 代码片段生成
+- 文档生成
+- 测试用例生成
+
+---
+
+### 12. voice/ -- 语音交互
+
+**VoiceMode 功能**:
+
+| 功能 | 说明 |
+|------|------|
+| 语音输入 | 手机端语音指令 |
+| 语音播报 | 回复内容朗读 |
+| 实时转写 | 语音 → 文字 |
+
+**集成方式**:
+
+```bash
+# 手机端语音输入
+🎤 "帮我重构这个函数，使其更符合 ES6 规范"
+```
+
+---
+
+### 13. vim/ -- Vim 模式引擎
+
+**Vim 模式特性**:
+
+| 功能 | 说明 |
+|------|------|
+| 模式切换 | Normal / Insert / Visual / Command |
+| 快捷键 | Vim 风格快捷键绑定 |
+| 终端集成 | 与终端操作无缝衔接 |
+
+**状态管理**:
+
+```typescript
+// Vim 状态机
+type VimMode = 'normal' | 'insert' | 'visual' | 'command';
+type VimState = {
+  mode: VimMode;
+  buffer: string;
+  cursor: Position;
+  registers: Register[];
+};
+```
+
+---
+
+### 14. utils/ -- 工具函数库
+
+**核心工具模块**:
+
+| 模块 | 功能 |
+|------|------|
+| git.ts | Git 操作封装 |
+| model.ts | 模型选择与配置 |
+| auth.ts | 认证相关工具 |
+| env.ts | 环境变量管理 |
+| security.ts | 安全检查（Hooks: **5,022 行**） |
+
+**安全相关** (`utils/hooks.ts`): **5,022 行**
+
+- 路径遍历防护
+- Unicode 标准化攻击防护
+- 反斜杠注入防护
+- `.gitconfig`、`.bashrc` 等敏感文件保护
+
+---
+
+### 15. 关键文件行数统计
+
+| 文件 | 行数 | 功能 |
+|------|------|------|
+| `services/api/claude.ts` | 3,419 | API 调用与 SSE 解析 |
+| `utils/hooks.ts` | 5,022 | 安全钩子 |
+| `screens/REPL.tsx` | 5,005 | REPL 主屏幕 |
+| `query.ts` | 1,729 | 对话主循环 |
+| `bashSecurity.ts` | 2,592 | Bash 安全检查 |
+| `tools/` | 53 个工具 | 工具实现 |
+
+---
+
+### 16. Query Loop -- 对话引擎核心
+
+**架构设计** (`query.ts:307`):
+
+```typescript
+// async generator 实现
+async function* query() {
+  while (true) {
+    // 1. 预处理：微压缩、context collapse
+    // 2. API 调用：流式接收回复
+    // 3. 工具执行：收集 tool_use blocks
+    // 4. 结果拼回：进入下一轮迭代
+    // 5. 终止判断：stop hooks 检查
+  }
+}
+```
+
+**背压控制**:
+
+```typescript
+// yield 实现流式推送
+// 消费者不调 .next()，生产者不推进
+// .return() 干净关闭 generator 链
+```
+
+**Token 边际递减检测** (`tokenBudget.ts`):
+
+```typescript
+// 连续 3 轮增量不足 500 token → 提前停止
+// 避免模型反复输出无意义小增量
+```
+
+---
+
+### 17. 上下文压缩架构
+
+**三层压缩系统**:
+
+| 层级 | 触发条件 | API 调用 | 说明 |
+|------|----------|----------|------|
+| **Micro Compact** | 每次 API 请求前 | 无 | 替换旧工具结果为 `[Old tool result content cleared]` |
+| **Session Memory Compact** | 后台持续运行 | 无 | 会话记忆直接替代 LLM 摘要 |
+| **LLM Compact** | 上下文超限 | 是 | 调用模型生成摘要 |
+
+**清理策略**:
+
+- 60 分钟时间阈值（对齐服务端 prompt cache TTL）
+- Read、Shell、Grep、Glob、WebSearch、WebFetch、Edit、Write 可清理
+
+---
+
+### 18. 安全与权限系统
+
+**六级权限验证**:
+
+```
+基础检查 → 风险分级 → ML 分类器 → YOLO 模式 → 用户确认 → 结果验证
+```
+
+**权限模式**:
+
+| 模式 | 说明 |
+|------|------|
+| `default` | 完整权限检查 |
+| `bypassPermissions` | 跳过所有检查 |
+| `enterprise` | 企业托管模式 |
+
+**文件系统权限**:
+
+```json
+// 白名单/黑名单机制
+{
+  "allow": ["/path/to/project/**"],
+  "deny": ["~/.ssh/**", "**/.env"]
+}
+```
